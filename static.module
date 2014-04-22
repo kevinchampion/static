@@ -1,0 +1,620 @@
+<?php
+/**
+ * @file
+ * Provides ability to render static file-based content sub-site within Drupal.
+ */
+
+/**
+ * TODO
+ *
+ * x invoke hook to allow definition of directories to look for static files
+ *  x handle building out routing for entire
+ * x make sure to filter content for security
+ * x build in caching so md doesn't have to always be converted
+ *  x ask aaron about drupal_fast_cache
+ *  x better structure than each page own cache id?
+ *  - add runtime cache for file scanning and menu generation
+ * x deal with html or markdown
+ * x admin form
+ * x be smarter about finding homepage
+ * x menu routers
+ *  x access
+ *    x more granular?
+ *      x provide optional full page definition in hook info?
+ *  x title
+ *  x menu type
+ *  x weight
+ * x deal with image assets (paths)
+ * x improve images and spacing -- css
+ * x ids for header elements, inner page links
+ *   turns out this needs to be handled by just writing html for these header
+ *   elements bc markdown doesn't support element attributes like ids
+ * x auto-generate index page
+ * x test subdirectories to create nested paths
+ *   x what to do with 'home' menu item of subdirectories
+ * x breadcrumbs
+ * x admin menu mapping
+ *   x clean up
+ *   x deal with multi-level directory structures
+ * x add drupal-org.make
+ *
+ * - refine static_index output generation
+ * - look for index page in subdir
+ * x top level index on a multi-level hierarchy site
+ * x provide parsedown or php-markdown support
+ * - detect file and file structure changes and rebuild menus when changed
+ *   When the menu items change, the items in the menu_links table don't change
+ *   if they already exist. This can create a bizarre situation where the coded
+ *   menu items don't get reflected on the site. The purpose of this is to
+ *   allow manual moving and reordering of menu items via the admin interface.
+ *   However, for the premise of this module it would be good if it could
+ *   rebuild those menu items somehow when it detects file changes.
+ *
+ *   If this doesn't prove to be feasible, it will instead need documentation
+ *   and helpers to point the user at the admin interface of the menu.
+ * - add optional site specific extensions and allowed tags
+ */
+
+/**
+ * Defines id for Static cache.
+ */
+define('STATIC_CACHE_ID', 'static_page_cache');
+
+
+/**
+ * Implements hook_libraries_info().
+ */
+function static_libraries_info() {
+
+  $libraries['php-markdown'] = array(
+    'name' => 'PHP Markdown',
+    'vendor url' => 'http://michelf.ca/projects/php-markdown/',
+    'download url' => 'http://littoral.michelf.ca/code/php-markdown/php-markdown-lib-1.3.zip',
+    'version' => '1.3',
+    'files' => array(
+      'php' => array(
+        'Markdown.php',
+      ),
+    ),
+    'path' => 'Michelf',
+  );
+
+  $libraries['parsedown'] = array(
+    'name' => 'Parsedown',
+    'vendor url' => 'http://parsedown.org/',
+    'download url' => 'https://github.com/erusev/parsedown/archive/1.0.0-rc.1.zip',
+    'version' => '1.0.0-rc.1',
+    'files' => array(
+      'php' => array(
+        'Parsedown.php',
+      ),
+    ),
+  );
+
+  return $libraries;
+
+}
+
+/**
+ * Implements hook_menu().
+ */
+function static_menu() {
+
+  $items = array();
+
+  $items['admin/config/content/static'] = array(
+    'title' => 'Static settings',
+    'description' => 'Configuration settings form for Static.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('static_admin'),
+    'access arguments' => array('administer static'),
+    'file' => 'static.admin.inc',
+    'file path' => 'includes',
+    'type' => MENU_NORMAL_ITEM,
+  );
+
+  $sites = array();
+  // Retrieve array of site info by invoking hook that other modules can use to
+  // define static sites.
+  drupal_alter('static_sites_info', $sites);
+
+  foreach ($sites as $site_id => $site) {
+
+    $files = _static_find_all_files($site['directory']);
+    $index = _static_find_index($site['directory']);
+
+    if ($index === FALSE) {
+
+      $items[$site['root_path']] = array(
+        'title' => $site['title'],
+        'description' => isset($site['description']) ? $site['description'] : '',
+        'access arguments' => array(isset($site['access']) ? $site['access'] : 'view static pages'),
+        'page callback' => '_static_index_menu_page',
+        'page arguments' => array($site['root_path']),
+        'type' => MENU_NORMAL_ITEM,
+        'weight' => isset($site['weight']) ? $site['weight'] : 0,
+      );
+
+    }
+    else {
+
+      $items[$site['root_path']] = array(
+        'title' => $site['title'],
+        'description' => isset($site['description']) ? $site['description'] : '',
+        'access arguments' => array(isset($site['access']) ? $site['access'] : 'view static pages'),
+        'page callback' => 'static_render',
+        'page arguments' => array($index->uri, $site_id, $site),
+        'type' => MENU_NORMAL_ITEM,
+        'weight' => isset($site['weight']) ? $site['weight'] : 0,
+      );
+
+    }
+
+    _static_construct_paths($items, $files, $site, $site_id);
+
+  }
+
+  return $items;
+
+}
+
+/**
+ * Implements hook_permission().
+ */
+function static_permission() {
+
+  return array(
+    'administer static' => array(
+      'title' => t('Administer Static'),
+      'description' => t('Administer static configuration.'),
+    ),
+    'view static pages' => array(
+      'title' => t('View Static Pages'),
+      'description' => t('View static site pages.'),
+    ),
+  );
+
+}
+
+/**
+ * Page callback for static path.
+ *
+ * @param $file_path
+ *   The .... file path of the page to render.
+ * @param $site_id
+ *   String id of the site, the key of the sites info array.
+ * @param $site
+ *   Array of site information.
+ */
+function static_render($file_path, $site_id, $site) {
+
+  $cache = cache_get(STATIC_CACHE_ID . '_' . $site_id);
+
+  if (isset($cache->data[$file_path])) {
+
+    $filtered_html = $cache->data[$file_path];
+
+  }
+  else {
+
+    $new_cache = ($cache) ? $cache->data : array();
+
+    $html_extensions = variable_get('static_html_extensions', array('htm', 'html'));
+    $markdown_extensions = variable_get('static_markdown_extensions', array('md', 'mkdown', 'markdown', 'mark', 'mdml', 'mdown', 'text', 'mdtext', 'mdtxt', 'mdwn', 'mkdn'));
+    $allowed_tags = variable_get('static_allowed_tags', array('a', 'em', 'strong', 'cite', 'blockquote', 'code', 'pre', 'ul', 'ol', 'li', 'dl', 'dt', 'dd', 'img', 'p', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'));
+
+    $content = file_get_contents($file_path);
+
+    $file = new SplFileInfo($file_path);
+    $ext = $file->getExtension();
+
+    $context = array(
+      'site_id' => $site_id,
+      'file_path' => $file_path,
+      'file' => $file,
+    );
+
+    // Invokes hook_static_render_alter().
+    drupal_alter('static_pre_render', $content, $context);
+
+    if (in_array($ext, $html_extensions)) {
+
+      $html = $content;
+
+    }
+
+    if (in_array($ext, $markdown_extensions)) {
+
+      if (isset($site['markdown_library']) && $site['markdown_library'] == 'php-markdown') {
+
+        $html = _static_convert_markdown_phpmarkdown($content, $site);
+
+      }
+      else {
+
+        $html = _static_convert_markdown_parsedown($content, $site);
+
+      }
+
+    }
+
+    $filtered_html = filter_xss($html, $allowed_tags);
+
+    $new_cache[$file_path] = $filtered_html;
+
+    cache_set(STATIC_CACHE_ID . '_' . $site_id, $new_cache);
+
+  }
+
+  $context = array(
+    'site_id' => $site_id,
+    'file_path' => $file_path,
+    'file' => $file,
+  );
+
+  // Invokes hook_static_render_alter().
+  drupal_alter('static_post_render', $filtered_html, $context);
+
+  return $filtered_html;
+
+}
+
+/**
+ * Menu callback for rendering a directory index page.
+ *
+ * Searches for existing index page and renders it. If can't find one, creates
+ * dynamic index and renders it.
+ *
+ * @param $files
+ *   Array of files as returned by file_scan_directory().
+ * @param $dir_path
+ *   String path of the directory.
+ * @param $site
+ *   Site info object as passed from hook implementation.
+ * @param $site_id
+ *   ID of the site info object.
+ *
+ * @return
+ *   Rendered HTML output.
+ */
+function static_index($files, $dir_path, $site, $site_id) {
+
+  // First look for existing index page and render it before generating dynamic
+  // index.
+  if ($file = _static_find_index($site['directory'] . '/' . $dir_path)) {
+
+    return static_render($file->uri, $site_id, $site);
+
+  }
+
+  $title = isset($site['pages'][$dir_path]['title']) ? $site['pages'][$dir_path]['title'] : $dir_path;
+
+  $output = '<h2>' . check_plain($title) . '</h2><ul>';
+
+  foreach ($files as $uri => $file) {
+
+    $link_text = (isset($site['pages'][$file->internal_path]) && isset($site['pages'][$file->internal_path]['title'])) ? $site['pages'][$file->internal_path]['title'] : $file->name;
+
+    // TODO: Don't just render, check access first.
+
+    $output .= '<li>' . l($link_text, $site['root_path'] . '/' . $file->internal_path_no_ext) . '</li>';
+
+  }
+
+  $output .= '</ul>';
+
+  return $output;
+
+}
+
+/**
+ * Page callback for static page not found.
+ */
+function static_render_not_found() {
+
+  // TODO: What should this return/render?
+  return t('No page was found.');
+
+}
+
+/**
+ * Constructs menu items for each of the found files.
+ *
+ * @param $files
+ *   Array of files found for the site using file_scan_directory().
+ * @param $site
+ *   Array of site properties as defined in hook info alter.
+ * @param $site_id
+ *   String id of the site, the key of the $sites info array.
+ *
+ * @return
+ *   Array of menu items.
+ */
+function _static_construct_paths(&$items, $files_map, $site, $site_id) {
+
+  // $items = array();
+
+  $site_title = $site['title'];
+  $site_description = '';
+  $site_access_arguments = isset($site['access']) ? $site['access'] : 'view static pages';
+  $site_type = MENU_NORMAL_ITEM;
+  $site_weight = 0;
+
+  foreach ($files_map as $dir_path => $files) {
+
+    // TODO: Abstract menu item creation out to its own method.
+
+    // Override menu properties with those defined in site info definition where
+    // available.
+    if (isset($site['pages'][$dir_path])) {
+
+      $title = isset($site['pages'][$dir_path]['title']) ? $site['pages'][$dir_path]['title'] : $site_title;
+      $description = isset($site['pages'][$dir_path]['description']) ? $site['pages'][$dir_path]['description'] : '';
+      $access_arguments = isset($site['pages'][$dir_path]['access arguments']) ? $site['pages'][$dir_path]['access arguments'] : $site_access_arguments;
+      $type = isset($site['pages'][$dir_path]['type']) ? $site['pages'][$dir_path]['type'] : $site_type;
+      $weight = isset($site['weight']) ? $site['weight'] : 0;
+
+    }
+
+    $items[$site['root_path'] . '/' . $dir_path] = array(
+      'title' => $title,
+      'description' => $description,
+      'access arguments' => array($access_arguments),
+      // 'page callback' => 'static_index',
+      // 'page arguments' => array($files, $dir_path, $site, $site_id),
+      'page callback' => 'system_admin_menu_block_page',
+      'file' => 'system.admin.inc',
+      'file path' => drupal_get_path('module', 'system'),
+      'type' => $type,
+      'weight' => $weight,
+    );
+
+    foreach ($files as $file) {
+
+      // Override menu properties with those defined in site info definition
+      // where available.
+      if (isset($site['pages'][$file->internal_path])) {
+
+        $title = isset($site['pages'][$file->internal_path]['title']) ? $site['pages'][$file->internal_path]['title'] : $title;
+        $access_arguments = isset($site['pages'][$file->internal_path]['access arguments']) ? $site['pages'][$file->internal_path]['access arguments'] : $access_arguments;
+        $type = isset($site['pages'][$file->internal_path]['type']) ? $site['pages'][$file->internal_path]['type'] : $type;
+        $weight = isset($site['weight']) ? $site['weight'] : 0;
+
+      }
+
+      $items[$site['root_path'] . '/' . $file->internal_path_no_ext] = array(
+        'title' => $title,
+        'access arguments' => array($access_arguments),
+        'page callback' => 'static_render',
+        'page arguments' => array($file->uri, $site_id, $site),
+        'type' => $type,
+        'weight' => $weight,
+      );
+
+    }
+
+  }
+
+}
+
+/**
+ * Find the index page of the directory.
+ *
+ * @param $directory
+ *   Path to the root directory of the static site where a homepage should be.
+ *
+ * @return
+ *   If found, file as returned by file_scan_directory(). Otherwise FALSE.
+ */
+function _static_find_index($directory) {
+
+  $html_extensions = variable_get('static_html_extensions', array('htm', 'html'));
+  $markdown_extensions = variable_get('static_markdown_extensions', array('md', 'mkdown', 'markdown', 'mark', 'mdml', 'mdown', 'text', 'mdtext', 'mdtxt', 'mdwn', 'mkdn'));
+
+  $allowed_extensions = array_merge($html_extensions, $markdown_extensions);
+  $regex = implode("|", $allowed_extensions);
+
+  $files = file_scan_directory($directory, '/\.(' . $regex . ')/', array('recurse' => FALSE, 'key' => 'filename'));
+
+  $candidates = array();
+
+  // Find file named 'index'.
+  foreach ($files as $file) {
+    $file_info = new SplFileInfo($file->uri);
+    $ext = $file_info->getExtension();
+    if ($file->name == 'index') {
+      $candidates[$ext] = $file;
+    }
+  }
+  if (!empty($candidates)) {
+    foreach ($html_extensions as $html_extension) {
+      if (!empty($candidates[$html_extension])) {
+        return $candidates[$html_extension];
+      }
+    }
+    foreach ($allowed_extensions as $extension) {
+      if (!empty($candidates[$extension])) {
+        return $candidates[$extension];
+      }
+    }
+  }
+
+  // Find file named 'home'.
+  foreach ($files as $file) {
+    $file_info = new SplFileInfo($file->uri);
+    $ext = $file_info->getExtension();
+    if ($file->name == 'home') {
+      $candidates[$ext] = $file;
+    }
+  }
+  if (!empty($candidates)) {
+    foreach ($html_extensions as $html_extension) {
+      if (!empty($candidates[$html_extension])) {
+        return $candidates[$html_extension];
+      }
+    }
+    foreach ($allowed_extensions as $extension) {
+      if (!empty($candidates[$extension])) {
+        return $candidates[$extension];
+      }
+    }
+  }
+
+  return FALSE;
+
+}
+
+/**
+ * Utility function. Recursively scans directory to find files and return them
+ * in an array.
+ *
+ * @param $dir
+ *
+ * @return Array
+ *   Structured array of files keyed by their directory.
+ */
+function _static_find_all_files($dir) {
+
+  $html_extensions = variable_get('static_html_extensions', array('htm', 'html'));
+  $markdown_extensions = variable_get('static_markdown_extensions', array('md', 'mkdown', 'markdown', 'mark', 'mdml', 'mdown', 'text', 'mdtext', 'mdtxt', 'mdwn', 'mkdn'));
+
+  $allowed_extensions = array_merge($html_extensions, $markdown_extensions);
+  $regex = implode("|", $allowed_extensions);
+
+  $files = file_scan_directory($dir, '/\.(' . $regex . ')/', array('recurse' => TRUE));
+
+  $files_map = array();
+
+  foreach ($files as $file) {
+
+    $file->internal_path = preg_replace('#' . $dir . '/#', '', $file->uri);
+    $parts = arg(NULL, $file->internal_path);
+    $file->internal_path_no_ext = preg_replace('#' . $parts[(count($parts) - 1)] . '#', $file->name, $file->internal_path);
+    $file->internal_path_parts = explode('/', $file->internal_path_no_ext);
+    $file->parent = preg_replace('#/' . $file->filename . '#', '', $file->uri);
+
+    if ($file->parent != $dir) {
+
+      $file->subdir = preg_replace('#' . $dir . '/#', '', $file->parent);
+
+      $files_map[$file->subdir][] = $file;
+
+    }
+    else {
+
+      $files_map['/'][] = $file;
+
+    }
+
+  }
+
+  return $files_map;
+
+}
+
+/**
+ * Menu callback; Provide the menu-based overview page.
+ */
+function _static_index_menu_page($root) {
+
+  $blocks = array();
+  if ($admin = db_query("SELECT menu_name, mlid FROM {menu_links} WHERE link_path = :link AND module = 'system'", array(':link' => $root))->fetchAssoc()) {
+    $result = db_query("
+      SELECT m.*, ml.*
+      FROM {menu_links} ml
+      INNER JOIN {menu_router} m ON ml.router_path = m.path
+      WHERE ml.link_path <> 'admin/help' AND menu_name = :menu_name AND ml.plid = :mlid AND hidden = 0", $admin, array('fetch' => PDO::FETCH_ASSOC));
+    foreach ($result as $item) {
+      _menu_link_translate($item);
+      if (!$item['access']) {
+        continue;
+      }
+      // The link description, either derived from 'description' in hook_menu()
+      // or customized via menu module is used as title attribute.
+      if (!empty($item['localized_options']['attributes']['title'])) {
+        $item['description'] = $item['localized_options']['attributes']['title'];
+        unset($item['localized_options']['attributes']['title']);
+      }
+      $block = $item;
+      $block['content'] = '';
+      $block['content'] .= theme('admin_block_content', array('content' => system_admin_menu_block($item)));
+      if (!empty($block['content'])) {
+        $block['show'] = TRUE;
+      }
+
+      // Prepare for sorting as in function _menu_tree_check_access().
+      // The weight is offset so it is always positive, with a uniform 5-digits.
+      $blocks[(50000 + $item['weight']) . ' ' . $item['title'] . ' ' . $item['mlid']] = $block;
+    }
+  }
+  if ($blocks) {
+    ksort($blocks);
+    return theme('admin_page', array('blocks' => $blocks));
+  }
+  else {
+    return static_render_not_found();
+  }
+
+}
+
+/**
+ * Converts markdown using the Parsedown library.
+ *
+ * @param $content
+ *
+ * @param $site
+ *   Array of site information.
+ *
+ * @return
+ *   Converted HTML.
+ */
+function _static_convert_markdown_parsedown($content, $site) {
+
+  global $base_path;
+
+  $library = libraries_load('parsedown');
+  require_once(drupal_get_path('module', 'static') . '/includes/StaticParsedown.class.php');
+
+  $StaticParsedown = new StaticParsedown();
+
+  if (isset($site['assets_directory'])) {
+
+    $StaticParsedown->set_base_path($base_path . $site['assets_directory'] . '/');
+
+  }
+  else {
+
+    $StaticParsedown->set_base_path($base_path . $site['directory'] . '/');
+
+  }
+
+  $html = $StaticParsedown->text($content);
+
+  return $html;
+
+}
+
+/**
+ * Converts markdown using the php-markdown library.
+ *
+ * @param $content
+ *
+ * @param $site
+ *   Array of site information.
+ *
+ * @return
+ *   Converted HTML.
+ */
+function _static_convert_markdown_phpmarkdown($content, $site) {
+
+  $library = libraries_load('php-markdown');
+
+  $parser = new \Michelf\Markdown;
+  $parser->code_attr_on_pre = true;
+  // $parser->predef_urls = array('ref' => 'http://michelf.ca/');
+  $html = $parser->transform($content);
+  // $html = \Michelf\Markdown::defaultTransform($content);
+
+  return $html;
+
+}

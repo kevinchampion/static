@@ -1,0 +1,6 @@
+name = Static
+description = Enable static sites inside Drupal
+php = 5.3
+core = 7.x
+dependencies[] = libraries (2.x)
+

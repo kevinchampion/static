@@ -39,7 +39,7 @@
  * x add drupal-org.make
  *
  * - refine static_index output generation
- * - look for index page in subdir
+ * x look for index page in subdir
  * x top level index on a multi-level hierarchy site
  * x provide parsedown or php-markdown support
  * - detect file and file structure changes and rebuild menus when changed
@@ -53,6 +53,10 @@
  *   If this doesn't prove to be feasible, it will instead need documentation
  *   and helpers to point the user at the admin interface of the menu.
  * - add optional site specific extensions and allowed tags
+ *
+ * - Add hook that allows module implementer to add arbitrary menu item for any
+ *   one of the site files. This item could be located anywhere outside of the
+ *   specific site root.
  */
 
 /**
@@ -109,7 +113,7 @@ function static_menu() {
     'page arguments' => array('static_admin'),
     'access arguments' => array('administer static'),
     'file' => 'static.admin.inc',
-    'file path' => 'includes',
+    'file path' => drupal_get_path('module', 'static') . '/includes',
     'type' => MENU_NORMAL_ITEM,
   );
 
@@ -120,8 +124,8 @@ function static_menu() {
 
   foreach ($sites as $site_id => $site) {
 
-    $files = _static_find_all_files($site['directory']);
-    $index = _static_find_index($site['directory']);
+    $files_map = _static_find_all_files($site['directory']);
+    $index = _static_find_index($files_map['/']);
 
     if ($index === FALSE) {
 
@@ -150,7 +154,7 @@ function static_menu() {
 
     }
 
-    _static_construct_paths($items, $files, $site, $site_id);
+    _static_construct_paths($items, $files_map, $site, $site_id);
 
   }
 
@@ -281,7 +285,7 @@ function static_index($files, $dir_path, $site, $site_id) {
 
   // First look for existing index page and render it before generating dynamic
   // index.
-  if ($file = _static_find_index($site['directory'] . '/' . $dir_path)) {
+  if ($file = _static_find_index($files)) {
 
     return static_render($file->uri, $site_id, $site);
 
@@ -338,52 +342,78 @@ function _static_construct_paths(&$items, $files_map, $site, $site_id) {
   $site_description = '';
   $site_access_arguments = isset($site['access']) ? $site['access'] : 'view static pages';
   $site_type = MENU_NORMAL_ITEM;
-  $site_weight = 0;
 
   foreach ($files_map as $dir_path => $files) {
 
-    // TODO: Abstract menu item creation out to its own method.
+    if ($dir_path != '/') {
 
-    // Override menu properties with those defined in site info definition where
-    // available.
-    if (isset($site['pages'][$dir_path])) {
+      // TODO: Abstract menu item creation out to its own method.
 
-      $title = isset($site['pages'][$dir_path]['title']) ? $site['pages'][$dir_path]['title'] : $site_title;
-      $description = isset($site['pages'][$dir_path]['description']) ? $site['pages'][$dir_path]['description'] : '';
-      $access_arguments = isset($site['pages'][$dir_path]['access arguments']) ? $site['pages'][$dir_path]['access arguments'] : $site_access_arguments;
-      $type = isset($site['pages'][$dir_path]['type']) ? $site['pages'][$dir_path]['type'] : $site_type;
-      $weight = isset($site['weight']) ? $site['weight'] : 0;
+      // Override menu properties with those defined in site info definition where
+      // available.
+      if (isset($site['pages'][$dir_path])) {
+
+        $title = isset($site['pages'][$dir_path]['title']) ? $site['pages'][$dir_path]['title'] : $dir_path;
+        $description = isset($site['pages'][$dir_path]['description']) ? $site['pages'][$dir_path]['description'] : '';
+        $access_arguments = isset($site['pages'][$dir_path]['access arguments']) ? $site['pages'][$dir_path]['access arguments'] : $site_access_arguments;
+        $type = isset($site['pages'][$dir_path]['type']) ? $site['pages'][$dir_path]['type'] : $site_type;
+        $weight = isset($site['weight']) ? $site['weight'] : 0;
+
+      }
+
+      $index = _static_find_index($files);
+
+      if ($index === FALSE) {
+
+        $items[$site['root_path'] . '/' . $dir_path] = array(
+          'title' => $title,
+          'description' => $description,
+          'access arguments' => array($access_arguments),
+          'page callback' => 'system_admin_menu_block_page',
+          'file' => 'system.admin.inc',
+          'file path' => drupal_get_path('module', 'system'),
+          'type' => $type,
+          'weight' => $weight,
+        );
+
+      }
+      else {
+
+        $items[$site['root_path'] . '/' . $dir_path] = array(
+          'title' => $title,
+          'description' => $description,
+          'access arguments' => array($access_arguments),
+          'page callback' => 'static_render',
+          'page arguments' => array($index->uri, $site_id, $site),
+          'type' => $type,
+          'weight' => $weight,
+        );
+
+      }
 
     }
 
-    $items[$site['root_path'] . '/' . $dir_path] = array(
-      'title' => $title,
-      'description' => $description,
-      'access arguments' => array($access_arguments),
-      // 'page callback' => 'static_index',
-      // 'page arguments' => array($files, $dir_path, $site, $site_id),
-      'page callback' => 'system_admin_menu_block_page',
-      'file' => 'system.admin.inc',
-      'file path' => drupal_get_path('module', 'system'),
-      'type' => $type,
-      'weight' => $weight,
-    );
-
     foreach ($files as $file) {
+
+      if ($file->name == 'index') {
+        continue;
+      }
 
       // Override menu properties with those defined in site info definition
       // where available.
       if (isset($site['pages'][$file->internal_path])) {
 
-        $title = isset($site['pages'][$file->internal_path]['title']) ? $site['pages'][$file->internal_path]['title'] : $title;
-        $access_arguments = isset($site['pages'][$file->internal_path]['access arguments']) ? $site['pages'][$file->internal_path]['access arguments'] : $access_arguments;
-        $type = isset($site['pages'][$file->internal_path]['type']) ? $site['pages'][$file->internal_path]['type'] : $type;
+        $title = isset($site['pages'][$file->internal_path]['title']) ? $site['pages'][$file->internal_path]['title'] : $file->filename;
+        $description = isset($site['pages'][$file->internal_path]['description']) ? $site['pages'][$file->internal_path]['description'] : $file->uri;
+        $access_arguments = isset($site['pages'][$file->internal_path]['access arguments']) ? $site['pages'][$file->internal_path]['access arguments'] : $site_access_arguments;
+        $type = isset($site['pages'][$file->internal_path]['type']) ? $site['pages'][$file->internal_path]['type'] : $site_type;
         $weight = isset($site['weight']) ? $site['weight'] : 0;
 
       }
 
       $items[$site['root_path'] . '/' . $file->internal_path_no_ext] = array(
         'title' => $title,
+        'description' => $description,
         'access arguments' => array($access_arguments),
         'page callback' => 'static_render',
         'page arguments' => array($file->uri, $site_id, $site),
@@ -400,51 +430,26 @@ function _static_construct_paths(&$items, $files_map, $site, $site_id) {
 /**
  * Find the index page of the directory.
  *
- * @param $directory
- *   Path to the root directory of the static site where a homepage should be.
+ * @param $files_map
+ *   Array of files for the directory to look in.
  *
  * @return
- *   If found, file as returned by file_scan_directory(). Otherwise FALSE.
+ *   If found, file as returned by files_map. Otherwise FALSE.
+ *
+ * @see   _static_find_all_files().
  */
-function _static_find_index($directory) {
+function _static_find_index($files_map) {
 
   $html_extensions = variable_get('static_html_extensions', array('htm', 'html'));
   $markdown_extensions = variable_get('static_markdown_extensions', array('md', 'mkdown', 'markdown', 'mark', 'mdml', 'mdown', 'text', 'mdtext', 'mdtxt', 'mdwn', 'mkdn'));
-
   $allowed_extensions = array_merge($html_extensions, $markdown_extensions);
-  $regex = implode("|", $allowed_extensions);
-
-  $files = file_scan_directory($directory, '/\.(' . $regex . ')/', array('recurse' => FALSE, 'key' => 'filename'));
 
   $candidates = array();
 
   // Find file named 'index'.
-  foreach ($files as $file) {
-    $file_info = new SplFileInfo($file->uri);
-    $ext = $file_info->getExtension();
+  foreach ($files_map as $file) {
     if ($file->name == 'index') {
-      $candidates[$ext] = $file;
-    }
-  }
-  if (!empty($candidates)) {
-    foreach ($html_extensions as $html_extension) {
-      if (!empty($candidates[$html_extension])) {
-        return $candidates[$html_extension];
-      }
-    }
-    foreach ($allowed_extensions as $extension) {
-      if (!empty($candidates[$extension])) {
-        return $candidates[$extension];
-      }
-    }
-  }
-
-  // Find file named 'home'.
-  foreach ($files as $file) {
-    $file_info = new SplFileInfo($file->uri);
-    $ext = $file_info->getExtension();
-    if ($file->name == 'home') {
-      $candidates[$ext] = $file;
+      $candidates[$file->extension] = $file;
     }
   }
   if (!empty($candidates)) {
@@ -488,8 +493,8 @@ function _static_find_all_files($dir) {
   foreach ($files as $file) {
 
     $file->internal_path = preg_replace('#' . $dir . '/#', '', $file->uri);
-    $parts = arg(NULL, $file->internal_path);
-    $file->internal_path_no_ext = preg_replace('#' . $parts[(count($parts) - 1)] . '#', $file->name, $file->internal_path);
+    $file->extension = preg_replace('#' . $file->name . '\.#', '', $file->filename);
+    $file->internal_path_no_ext = preg_replace('#' . $file->filename . '#', $file->name, $file->internal_path);
     $file->internal_path_parts = explode('/', $file->internal_path_no_ext);
     $file->parent = preg_replace('#/' . $file->filename . '#', '', $file->uri);
 

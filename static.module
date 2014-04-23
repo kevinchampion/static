@@ -13,7 +13,6 @@
  * x build in caching so md doesn't have to always be converted
  *  x ask aaron about drupal_fast_cache
  *  x better structure than each page own cache id?
- *  - add runtime cache for file scanning and menu generation
  * x deal with html or markdown
  * x admin form
  * x be smarter about finding homepage
@@ -37,11 +36,16 @@
  *   x clean up
  *   x deal with multi-level directory structures
  * x add drupal-org.make
- *
- * - refine static_index output generation
  * x look for index page in subdir
  * x top level index on a multi-level hierarchy site
  * x provide parsedown or php-markdown support
+ * x add optional site specific extensions and allowed tags
+ *
+ * - Add hook that allows module implementer to add arbitrary menu item for any
+ *   one of the site files. This item could be located anywhere outside of the
+ *   specific site root.
+ * - expose index page render output to a hook and allow implementing modules to
+ *   define their own dynamic index page, pass hook file info
  * - detect file and file structure changes and rebuild menus when changed
  *   When the menu items change, the items in the menu_links table don't change
  *   if they already exist. This can create a bizarre situation where the coded
@@ -52,11 +56,7 @@
  *
  *   If this doesn't prove to be feasible, it will instead need documentation
  *   and helpers to point the user at the admin interface of the menu.
- * - add optional site specific extensions and allowed tags
- *
- * - Add hook that allows module implementer to add arbitrary menu item for any
- *   one of the site files. This item could be located anywhere outside of the
- *   specific site root.
+ * - add runtime cache for file scanning and menu generation
  */
 
 /**
@@ -124,7 +124,7 @@ function static_menu() {
 
   foreach ($sites as $site_id => $site) {
 
-    $files_map = _static_find_all_files($site['directory']);
+    $files_map = _static_find_all_files($site);
     $index = _static_find_index($files_map['/']);
 
     if ($index === FALSE) {
@@ -203,9 +203,9 @@ function static_render($file_path, $site_id, $site) {
 
     $new_cache = ($cache) ? $cache->data : array();
 
-    $html_extensions = variable_get('static_html_extensions', array('htm', 'html'));
-    $markdown_extensions = variable_get('static_markdown_extensions', array('md', 'mkdown', 'markdown', 'mark', 'mdml', 'mdown', 'text', 'mdtext', 'mdtxt', 'mdwn', 'mkdn'));
-    $allowed_tags = variable_get('static_allowed_tags', array('a', 'em', 'strong', 'cite', 'blockquote', 'code', 'pre', 'ul', 'ol', 'li', 'dl', 'dt', 'dd', 'img', 'p', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'));
+    $html_extensions = isset($site['html_extensions']) ? $site['html_extensions'] : variable_get('static_html_extensions', array('htm', 'html'));
+    $markdown_extensions = isset($site['markdown_extensions']) ? $site['markdown_extensions'] : variable_get('static_markdown_extensions', array('md', 'mkdown', 'markdown', 'mark', 'mdml', 'mdown', 'text', 'mdtext', 'mdtxt', 'mdwn', 'mkdn'));
+    $allowed_tags = isset($site['allowed_tags']) ? $site['allowed_tags'] : variable_get('static_allowed_tags', array('a', 'em', 'strong', 'cite', 'blockquote', 'code', 'pre', 'ul', 'ol', 'li', 'dl', 'dt', 'dd', 'img', 'p', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'));
 
     $content = file_get_contents($file_path);
 
@@ -440,8 +440,8 @@ function _static_construct_paths(&$items, $files_map, $site, $site_id) {
  */
 function _static_find_index($files_map) {
 
-  $html_extensions = variable_get('static_html_extensions', array('htm', 'html'));
-  $markdown_extensions = variable_get('static_markdown_extensions', array('md', 'mkdown', 'markdown', 'mark', 'mdml', 'mdown', 'text', 'mdtext', 'mdtxt', 'mdwn', 'mkdn'));
+  $html_extensions = isset($site['html_extensions']) ? $site['html_extensions'] : variable_get('static_html_extensions', array('htm', 'html'));
+  $markdown_extensions = isset($site['markdown_extensions']) ? $site['markdown_extensions'] : variable_get('static_markdown_extensions', array('md', 'mkdown', 'markdown', 'mark', 'mdml', 'mdown', 'text', 'mdtext', 'mdtxt', 'mdwn', 'mkdn'));
   $allowed_extensions = array_merge($html_extensions, $markdown_extensions);
 
   $candidates = array();
@@ -473,34 +473,35 @@ function _static_find_index($files_map) {
  * Utility function. Recursively scans directory to find files and return them
  * in an array.
  *
- * @param $dir
+ * @param $site
+ *   Info array that defines the site's configuration.
  *
  * @return Array
  *   Structured array of files keyed by their directory.
  */
-function _static_find_all_files($dir) {
+function _static_find_all_files($site) {
 
-  $html_extensions = variable_get('static_html_extensions', array('htm', 'html'));
-  $markdown_extensions = variable_get('static_markdown_extensions', array('md', 'mkdown', 'markdown', 'mark', 'mdml', 'mdown', 'text', 'mdtext', 'mdtxt', 'mdwn', 'mkdn'));
+  $html_extensions = isset($site['html_extensions']) ? $site['html_extensions'] : variable_get('static_html_extensions', array('htm', 'html'));
+  $markdown_extensions = isset($site['markdown_extensions']) ? $site['markdown_extensions'] : variable_get('static_markdown_extensions', array('md', 'mkdown', 'markdown', 'mark', 'mdml', 'mdown', 'text', 'mdtext', 'mdtxt', 'mdwn', 'mkdn'));
 
   $allowed_extensions = array_merge($html_extensions, $markdown_extensions);
   $regex = implode("|", $allowed_extensions);
 
-  $files = file_scan_directory($dir, '/\.(' . $regex . ')/', array('recurse' => TRUE));
+  $files = file_scan_directory($site['directory'], '/\.(' . $regex . ')/', array('recurse' => TRUE));
 
   $files_map = array();
 
   foreach ($files as $file) {
 
-    $file->internal_path = preg_replace('#' . $dir . '/#', '', $file->uri);
+    $file->internal_path = preg_replace('#' . $site['directory'] . '/#', '', $file->uri);
     $file->extension = preg_replace('#' . $file->name . '\.#', '', $file->filename);
     $file->internal_path_no_ext = preg_replace('#' . $file->filename . '#', $file->name, $file->internal_path);
     $file->internal_path_parts = explode('/', $file->internal_path_no_ext);
     $file->parent = preg_replace('#/' . $file->filename . '#', '', $file->uri);
 
-    if ($file->parent != $dir) {
+    if ($file->parent != $site['directory']) {
 
-      $file->subdir = preg_replace('#' . $dir . '/#', '', $file->parent);
+      $file->subdir = preg_replace('#' . $site['directory'] . '/#', '', $file->parent);
 
       $files_map[$file->subdir][] = $file;
 

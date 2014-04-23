@@ -26,6 +26,17 @@
  *   'markdown_library' (optional)
  *     The library to use for converting markdown. Takes options 'parsedown' or
  *     'php-markdown'. Defaults to 'parsedown'.
+ *   'html_extensions' (optional)
+ *     Array of html extensions Static should build menu items and render for
+ *     this site.
+ *   'markdown_extensions' (optional)
+ *     Array of markdown extensions Static should build menu items and render
+ *     for this site.
+ *   'allowed_tags' (optional)
+ *     Array of HTML tags that should not be filtered out when filtering
+ *     rendered HTML for security purposes. This array is passed to
+ *     filter_xss().
+ *     @see filter_xss()
  *   'access' (optional)
  *     The user permission that will control access to the entire site.
  *   'weight' (optional)
@@ -44,12 +55,21 @@ function hook_static_sites_info_alter(&$sites) {
     'root_path' => 'my-site',
     'assets_directory' => $my_module_path . '/docs/assets',
     'markdown_library' => 'parsedown',
+    'html_extensions' => array('htm', 'html'),
+    'markdown_extensions' => array('md', 'mkdown', 'markdown', 'mark', 'mdml', 'mdown', 'text', 'mdtext', 'mdtxt', 'mdwn', 'mkdn'),
+    'allowed_tags' => array('a', 'em', 'strong', 'cite', 'blockquote', 'code', 'pre', 'ul', 'ol', 'li', 'dl', 'dt', 'dd', 'img', 'p', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'),
     'title' => 'Dynamic static site test',
+    'description' => 'My site\'s description.',
     'access' => 'view my site',
     'weight' => 100,
     'pages' => array(
-      'index.md' => array(
+      'subdir' => array(
+        'title' => 'My subdirectory',
+        'description' => 'My subdirectory defines hierarchical structure to my-site. It has it\'s own menu item and renders a dynamic index page listing the pages within it. Adding a static index file within my subdirectory will render that static page in place of the dynamic index output.',
+      ),
+      'subdir/index.md' => array(
         'title' => 'Home',
+        'description' => 'My page\'s description.',
         'access arguments' => array('view my-site'),
         'type' => MENU_NORMAL_ITEM,
       ),

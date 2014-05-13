@@ -57,6 +57,8 @@
  *   If this doesn't prove to be feasible, it will instead need documentation
  *   and helpers to point the user at the admin interface of the menu.
  * - add runtime cache for file scanning and menu generation
+ * - add example module for demonstrating how to invoke hooks
+ * - check into actual file location access
  */
 
 /**
@@ -125,7 +127,7 @@ function static_menu() {
   foreach ($sites as $site_id => $site) {
 
     $files_map = _static_find_all_files($site);
-    $index = _static_find_index($files_map['/']);
+    $index = _static_find_index($files_map);
 
     if ($index === FALSE) {
 
@@ -448,7 +450,7 @@ function _static_find_index($files_map) {
 
   // Find file named 'index'.
   foreach ($files_map as $file) {
-    if ($file->name == 'index') {
+    if (isset($file->name) && $file->name == 'index') {
       $candidates[$file->extension] = $file;
     }
   }

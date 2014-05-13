@@ -1,7 +1,8 @@
 <?php
 
 /**
- * @file Static administration functionality.
+ * @file
+ * Static administration functionality.
  */
 
 
@@ -25,7 +26,20 @@ function static_admin() {
     '#size' => 100,
   );
 
-  $markdown_ext = variable_get('static_markdown_extensions', array('md', 'mkdown', 'markdown', 'mark', 'mdml', 'mdown', 'text', 'mdtext', 'mdtxt', 'mdwn', 'mkdn'));
+  $markdown_ext = variable_get('static_markdown_extensions', array(
+    'md',
+    'mkdown',
+    'markdown',
+    'mark',
+    'mdml',
+    'mdown',
+    'text',
+    'mdtext',
+    'mdtxt',
+    'mdwn',
+    'mkdn',
+    )
+  );
   $markdown_ext = implode(', ', $markdown_ext);
 
   $form['static_markdown_extensions'] = array(
@@ -36,7 +50,27 @@ function static_admin() {
     '#size' => 100,
   );
 
-  $allowed_tags = variable_get('static_allowed_tags', array('a', 'em', 'strong', 'cite', 'blockquote', 'code', 'ul', 'ol', 'li', 'dl', 'dt', 'dd', 'img', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'));
+  $allowed_tags = variable_get('static_allowed_tags', array('a',
+    'em',
+    'strong',
+    'cite',
+    'blockquote',
+    'code',
+    'ul',
+    'ol',
+    'li',
+    'dl',
+    'dt',
+    'dd',
+    'img',
+    'h1',
+    'h2',
+    'h3',
+    'h4',
+    'h5',
+    'h6',
+    )
+  );
   $allowed_tags = implode(', ', $allowed_tags);
 
   $form['static_allowed_tags'] = array(
@@ -67,17 +101,17 @@ function static_admin_submit(&$form, &$form_state) {
 
   $html_ext = $markdown_ext = $allowed_tags = array();
 
-  // Prepare the html extensions
+  // Prepare the html extensions.
   $html_ext = trim($form_state['values']['static_html_extensions']);
   $html_ext = explode(',', $html_ext);
   $html_ext = array_map('trim', $html_ext);
 
-  // Prepare the html extensions
+  // Prepare the html extensions.
   $markdown_ext = trim($form_state['values']['static_markdown_extensions']);
   $markdown_ext = explode(',', $markdown_ext);
   $markdown_ext = array_map('trim', $markdown_ext);
 
-  // Prepare the html extensions
+  // Prepare the html extensions.
   $allowed_tags = trim($form_state['values']['static_allowed_tags']);
   $allowed_tags = explode(',', $allowed_tags);
   $allowed_tags = array_map('trim', $allowed_tags);

@@ -438,7 +438,7 @@ function _static_construct_paths(&$items, $files_map, $site, $site_id) {
  * @return
  *   If found, file as returned by files_map. Otherwise FALSE.
  *
- * @see   _static_find_all_files().
+ * @see  _static_find_all_files()
  */
 function _static_find_index($files_map) {
 
@@ -618,7 +618,7 @@ function _static_convert_markdown_phpmarkdown($content, $site) {
   $library = libraries_load('php-markdown');
 
   $parser = new \Michelf\Markdown;
-  $parser->code_attr_on_pre = true;
+  $parser->code_attr_on_pre = TRUE;
   // $parser->predef_urls = array('ref' => 'http://michelf.ca/');
   $html = $parser->transform($content);
   // $html = \Michelf\Markdown::defaultTransform($content);
